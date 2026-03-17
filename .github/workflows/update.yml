@@ -1,34 +1,93 @@
 name: Update Program Data
 
+# 触发条件
 on:
+  # 1. 推送到main分支时触发
+  push:
+    branches:
+      - main
+    # 避免因workflow自动提交而循环触发
+    paths-ignore:
+      - 'programs.xlsx'
+      - 'README.md'
+  
+  # 2. 每天UTC 3点定时运行（北京时间上午11点）
   schedule:
-    - cron: "0 3 * * *"   # 每天UTC 3点运行
+    - cron: "0 3 * * *"
+  
+  # 3. 支持手动触发（在Actions页面点击按钮）
+  workflow_dispatch:
+
+# 权限设置（让workflow有权限推送代码）
+permissions:
+  contents: write
 
 jobs:
   run-script:
-
+    # 防止并发运行，如果同一个分支有多个运行，取消旧的
+    concurrency:
+      group: ${{ github.workflow }}-${{ github.ref }}
+      cancel-in-progress: true
+    
     runs-on: ubuntu-latest
-
+    
     steps:
-
       - name: Checkout repository
         uses: actions/checkout@v3
+        with:
+          # 获取完整历史，方便后面检查变化
+          fetch-depth: 0
 
       - name: Setup Python
         uses: actions/setup-python@v4
         with:
           python-version: "3.10"
+          cache: 'pip' # 缓存pip依赖加速
 
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
 
       - name: Run scraper
         run: python main.py
+        # 即使脚本出错也继续执行，方便查看日志
+        continue-on-error: true
 
-      - name: Commit results
+      - name: Check for changes
+        id: git-check
         run: |
-          git config --global user.name "github-actions"
-          git config --global user.email "actions@github.com"
+          # 检查programs.xlsx是否有变化
+          git add programs.xlsx -n
+          if git diff --staged --quiet; then
+            echo "No changes to commit"
+            echo "changed=false" >> $GITHUB_OUTPUT
+          else
+            echo "Changes detected"
+            echo "changed=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Commit and push if changed
+        if: steps.git-check.outputs.changed == 'true'
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          
+          # 只添加programs.xlsx文件
           git add programs.xlsx
-          git commit -m "Auto update data"
+          
+          # 提交并推送
+          git commit -m "Auto update program data [skip ci]"
+          # [skip ci] 可以避免再次触发workflow
           git push
+          
+          echo "✅ Successfully updated programs.xlsx"
+
+      - name: Send notification (可选)
+        if: always() # 无论成功失败都运行
+        run: |
+          if [[ "${{ steps.git-check.outputs.changed }}" == "true" ]]; then
+            echo "🎉 Data was updated successfully!"
+          else
+            echo "ℹ️ No new data found or scraper failed"
+          fi
